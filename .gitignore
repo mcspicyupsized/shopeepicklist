@@ -1,0 +1,42 @@
+# Credentials and sensitive files
+picklist.json
+*.json
+credentials/
+gspread/  # This will exclude the entire gspread directory
+# OR if you want to be more specific:
+gspread/*.json  # This will exclude only JSON files in the gspread directory
+
+# Python environment
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

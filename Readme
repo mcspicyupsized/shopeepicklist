@@ -1,0 +1,167 @@
+# Deployment Guide for Shopee Picklist Processor
+
+This guide will help you deploy the Shopee Picklist Processor as a Streamlit web application that can be accessed remotely.
+
+## Prerequisites
+
+1. Python 3.7 or higher
+2. A Google Cloud service account with access to Google Sheets
+3. Your service account JSON file (`picklist.json`)
+
+## Local Setup
+
+### 1. Create a Project Directory
+
+```bash
+mkdir shopee-picklist-app
+cd shopee-picklist-app
+```
+
+### 2. Set Up a Virtual Environment
+
+```bash
+python -m venv venv
+# On Windows
+venv\Scripts\activate
+# On macOS/Linux
+source venv/bin/activate
+```
+
+### 3. Install Required Packages
+
+Create a `requirements.txt` file with the following content:
+
+```
+streamlit==1.32.0
+pandas==2.1.0
+gspread==5.12.0
+gspread-dataframe==3.3.1
+google-auth==2.25.2
+```
+
+Install the packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. File Structure
+
+Create the following files in your project directory:
+
+- `shopee_picklist.py` - The refactored processing script
+- `app.py` - The Streamlit application code
+- `picklist.json` - Your Google Cloud service account credentials
+
+### 5. Run Locally
+
+```bash
+streamlit run app.py
+```
+
+This will start a local web server and open the application in your web browser.
+
+## Cloud Deployment Options
+
+### Option 1: Streamlit Cloud (Easiest)
+
+1. Create a GitHub repository with your code
+2. Sign up for a [Streamlit Cloud](https://streamlit.io/cloud) account
+3. Create a new app pointing to your repository
+4. Add your `picklist.json` credentials as a secret
+5. Deploy the app
+
+### Option 2: Heroku
+
+1. Create a `Procfile` with the content: `web: streamlit run app.py --server.port=$PORT`
+2. Add a `setup.sh` file:
+
+```bash
+mkdir -p ~/.streamlit/
+echo "[server]
+headless = true
+port = $PORT
+enableCORS = false
+" > ~/.streamlit/config.toml
+```
+
+3. Install the Heroku CLI and deploy:
+
+```bash
+heroku login
+heroku create shopee-picklist-app
+git add .
+git commit -m "Initial commit"
+heroku git:remote -a shopee-picklist-app
+git push heroku main
+```
+
+4. Add your `picklist.json` credentials as a config variable in the Heroku dashboard
+
+### Option 3: Google Cloud Run (Recommended for Production)
+
+1. Create a `Dockerfile`:
+
+```dockerfile
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+EXPOSE 8080
+
+CMD streamlit run app.py --server.port=8080 --server.address=0.0.0.0
+```
+
+2. Build and deploy:
+
+```bash
+# Install Google Cloud SDK if you haven't already
+gcloud auth login
+gcloud builds submit --tag gcr.io/[YOUR_PROJECT_ID]/shopee-picklist-app
+gcloud run deploy shopee-picklist-app --image gcr.io/[YOUR_PROJECT_ID]/shopee-picklist-app --platform managed
+```
+
+## Security Considerations
+
+1. **Credentials Management**: Never commit your `picklist.json` file to public repositories. Use environment variables or secret management in production.
+
+2. **Authentication**: Add user authentication to your Streamlit app using:
+   - Streamlit's built-in authentication
+   - Google OAuth
+   - A custom login page
+
+3. **Access Controls**: Implement role-based access if multiple users will use the system.
+
+## Maintenance
+
+1. Set up logging to capture errors and usage patterns
+2. Create monitoring alerts for application failures
+3. Schedule regular backups of any local data
+4. Periodically review and update dependencies
+
+## Scaling Considerations
+
+If your order volume grows significantly (500+ orders/day):
+
+1. Consider implementing database storage instead of relying solely on Google Sheets
+2. Implement caching for frequently accessed data
+3. Move to a more robust web framework like Flask or FastAPI
+4. Set up background processing for large batch operations
+
+## Support and Troubleshooting
+
+If you encounter issues:
+
+1. Check application logs
+2. Verify Google Sheets API quotas and limits
+3. Test Google service account permissions
+4. Ensure your credentials file is correctly formatted and valid
+
+---
+
+Following this guide will help you successfully deploy the Shopee Picklist Processor as a web application that can be securely accessed from anywhere.
