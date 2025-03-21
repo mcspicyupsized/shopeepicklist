@@ -47,7 +47,11 @@ BUNDLE_SKUS = {
 def connect_to_sheet(credentials_file: str, sheet_name: str, worksheet_name: str) -> gspread.Worksheet:
     """Connect to Google Sheet and return worksheet."""
     try:
-        sa = gspread.service_account(filename=credentials_file)
+        logger.info(f"Connecting to Google Sheets with credentials: {credentials_file}")
+        if isinstance(credentials_file, dict):
+            sa = gspread.service_account_from_dict(credentials_file)
+        else:
+            sa = gspread.service_account(filename=credentials_file)
         sh = sa.open(sheet_name)
         wks = sh.worksheet(worksheet_name)
         return wks
@@ -56,25 +60,12 @@ def connect_to_sheet(credentials_file: str, sheet_name: str, worksheet_name: str
         raise
 
 
-def process_raw_data(data: List[str]) -> List[List[str]]:
-    """Process raw data by splitting based on markers and separators."""
-    processed_data = []
-    marker_regex = r'\[\d+\]'
-
-    for item in data:
-        entries = re.split(marker_regex, item)
-        entries = [entry.strip() for entry in entries if entry.strip()]
-        for entry in entries:
-            parts = [part.strip() for part in entry.split(';') if part]
-            processed_data.append(parts)
-
-    return processed_data
-
-
 def extract_skus(sku_data: List[str]) -> List[str]:
     """Extract SKUs from the raw SKU column data."""
     skus_list = []
     for bare in sku_data:
+        if not bare:  # Skip empty cells
+            continue
         split_bare = bare.split(':')
         if len(split_bare) > 1:
             skus_list.append(split_bare[1].strip())
@@ -94,7 +85,7 @@ def parse_quantity(quantity_str: str) -> int:
         return 0
 
 
-def process_individual_sizes(variations: List[str], quantities: List[str]) -> Tuple[
+def process_individual_sizes(order_ids: List[str], quantities: List[str], skus: List[str]) -> Tuple[
     List[Tuple[str, str]], List[Tuple[str, str]], List[int]]:
     """Process individual size variations."""
     sku_updates = []
@@ -102,84 +93,115 @@ def process_individual_sizes(variations: List[str], quantities: List[str]) -> Tu
     rows_to_clear = []
     size_regex = r'\(\d+(?:\.\d+)?\" [xX] \d+(?:\.\d+)?\"\) \d+pc'
 
-    for index, (variation, quantity_str) in enumerate(zip(variations, quantities), start=1):
-        size_match = re.findall(size_regex, variation)
-        if size_match:
-            for match in size_match:
-                sku_size = SIZE_TO_SKU.get(match)
-                if sku_size:
-                    SKU, base_quantity_str = sku_size.split(' x ')
-                    base_quantity = int(base_quantity_str)
-                    quantity = parse_quantity(quantity_str)
+    for index, (order_id, quantity_str, sku) in enumerate(zip(order_ids, quantities, skus), start=1):
+        # Skip empty rows
+        if not order_id or not quantity_str:
+            continue
 
-                    total_quantity = base_quantity * quantity
-                    formatted_quantity = f"Quantity: {total_quantity}"
-                    sku_updates.append((f'E{index}', SKU))
-                    quantity_updates.append((f'D{index}', formatted_quantity))
-                    logger.debug(f"Processing individual size: {match} → SKU: {SKU}, Quantity: {total_quantity}")
+        # Look for size variations in SKU or order ID
+        size_match = None
+        for field in [order_id, sku]:
+            if field and re.search(size_regex, field):
+                size_match = re.search(size_regex, field).group(0)
+                break
+
+        if size_match:
+            sku_size = SIZE_TO_SKU.get(size_match)
+            if sku_size:
+                SKU, base_quantity_str = sku_size.split(' x ')
+                base_quantity = int(base_quantity_str)
+                quantity = parse_quantity(quantity_str)
+
+                total_quantity = base_quantity * quantity
+                formatted_quantity = f"Quantity: {total_quantity}"
+                # Update in the correct columns - now C for SKU, B for quantity
+                sku_updates.append((f'C{index}', SKU))
+                quantity_updates.append((f'B{index}', formatted_quantity))
+                logger.debug(f"Processing individual size: {size_match} → SKU: {SKU}, Quantity: {total_quantity}")
 
     return sku_updates, quantity_updates, rows_to_clear
 
 
-def process_bundle_sizes(variations: List[str], quantities: List[str]) -> Tuple[List[List[str]], List[int]]:
+def process_bundle_sizes(order_ids: List[str], quantities: List[str], skus: List[str]) -> Tuple[
+    List[List[str]], List[int]]:
     """Process bundle size variations."""
     additional_rows = []
     rows_to_clear = []
     size_regex2 = r'\(\d+ SIZES, \d+s\)'
 
-    for index, (variation, quantity_str) in enumerate(zip(variations, quantities), start=1):
-        size_matches = re.findall(size_regex2, variation)
+    for index, (order_id, quantity_str, sku) in enumerate(zip(order_ids, quantities, skus), start=1):
+        # Skip empty rows
+        if not order_id or not quantity_str:
+            continue
+
+        # Look for bundle size variations in SKU or order ID
+        size_matches = None
+        for field in [order_id, sku]:
+            if field and re.search(size_regex2, field):
+                size_matches = re.search(size_regex2, field).group(0)
+                break
+
         if size_matches:
-            for matches in size_matches:
-                skus_quantities = SIZES_TO_SKU.get(matches, "").split(',')
-                for sku_quantity in skus_quantities:
-                    if not sku_quantity:
-                        continue
+            skus_quantities = SIZES_TO_SKU.get(size_matches, "").split(',')
+            for sku_quantity in skus_quantities:
+                if not sku_quantity:
+                    continue
 
-                    SKU, base_quantity_str = sku_quantity.split(' x ')
-                    base_quantity = int(base_quantity_str)
-                    quantity = parse_quantity(quantity_str)
+                SKU, base_quantity_str = sku_quantity.split(' x ')
+                base_quantity = int(base_quantity_str)
+                quantity = parse_quantity(quantity_str)
 
-                    total_quantity = base_quantity * quantity
-                    new_row = [variation, '', '', f"Quantity: {total_quantity}", SKU]
-                    additional_rows.append(new_row)
+                total_quantity = base_quantity * quantity
+                # Column order: [order_id, quantity, sku, parent_sku]
+                new_row = [order_id, f"Quantity: {total_quantity}", SKU, sku]
+                additional_rows.append(new_row)
 
-                rows_to_clear.append(index)
-                logger.debug(f"Processing bundle size: {matches}")
+            rows_to_clear.append(index)
+            logger.debug(f"Processing bundle size: {size_matches}")
 
     return additional_rows, rows_to_clear
 
 
-def process_special_bundles(variations: List[str], quantities: List[str], skus: List[str]) -> Tuple[
-    List[List[str]], List[int]]:
+def process_special_bundles(order_ids: List[str], quantities: List[str], skus: List[str], parent_skus: List[str]) -> \
+Tuple[List[List[str]], List[int]]:
     """Process special bundle products."""
     bundle_rows = []
     rows_to_clear = []
 
-    # Process variation-based bundles
-    for index, (variation, quantity) in enumerate(zip(variations, quantities), start=1):
-        for bundle_name, bundle_key in [
-            ("Variation Name:Boot Polishing Pack", "Boot Polishing Pack"),
-            ("Variation Name:Pouch and Stick", "Pouch and Stick")
-        ]:
-            if variation == bundle_name:
-                skus_list = BUNDLE_SKUS[bundle_key].split(',')
-                for sku in skus_list:
-                    sku_id, _ = sku.strip().split(' ')
-                    new_row = [variation, '', '', f"{quantity}", sku_id]
-                    bundle_rows.append(new_row)
-                rows_to_clear.append(index)
-
     # Process SKU-based bundles
-    for index, (sku, quantity) in enumerate(zip(skus, quantities), start=1):
+    for index, (order_id, quantity_str, sku, parent_sku) in enumerate(zip(order_ids, quantities, skus, parent_skus),
+                                                                      start=1):
+        # Skip empty cells
+        if not sku or not quantity_str:
+            continue
+
+        # Check special bundles
+        special_bundle = None
+
+        # Check if SKU is a special bundle
         if sku == "RCK-FULLSET":
-            rck_sku_items = BUNDLE_SKUS["RCK-FULLSET"].split(",")
-            for rck_sku in rck_sku_items:
-                if rck_sku.strip():
-                    rck_id = rck_sku.strip().split(" ")[0]
-                    new_row = [sku, '', '', f"{quantity}", rck_id]
-                    bundle_rows.append(new_row)
+            special_bundle = "RCK-FULLSET"
+        elif "Boot Polishing Pack" in sku or "Boot Polishing Pack" in order_id:
+            special_bundle = "Boot Polishing Pack"
+        elif "Pouch and Stick" in sku or "Pouch and Stick" in order_id:
+            special_bundle = "Pouch and Stick"
+
+        if special_bundle:
+            bundle_items = BUNDLE_SKUS.get(special_bundle, "").split(",")
+            for bundle_item in bundle_items:
+                if not bundle_item.strip():
+                    continue
+
+                sku_id, quantity_multiplier = bundle_item.strip().split(' ')
+                quantity = parse_quantity(quantity_str)
+                total_quantity = int(quantity_multiplier) * quantity
+
+                # Column order: [order_id, quantity, sku, parent_sku]
+                new_row = [order_id, f"Quantity: {total_quantity}", sku_id, parent_sku or sku]
+                bundle_rows.append(new_row)
+
             rows_to_clear.append(index)
+            logger.debug(f"Processing special bundle: {special_bundle}")
 
     return bundle_rows, rows_to_clear
 
@@ -190,17 +212,15 @@ def apply_batch_updates(worksheet, sku_updates, quantity_updates):
 
     # Add SKU updates to batch
     for cell, sku in sku_updates:
-        row_index = int(cell[1:])
         batch_updates.append({
-            'range': f'E{row_index}',
+            'range': cell,
             'values': [[sku]]
         })
 
     # Add quantity updates to batch
     for cell, quantity in quantity_updates:
-        row_index = int(cell[1:])
         batch_updates.append({
-            'range': f'D{row_index}',
+            'range': cell,
             'values': [[quantity]]
         })
 
@@ -219,9 +239,10 @@ def append_new_rows(worksheet, additional_rows):
 
     try:
         next_row = len(worksheet.col_values(1)) + 1
-        update_range = f'A{next_row}:E{next_row + len(additional_rows) - 1}'
-        worksheet.update(update_range, additional_rows)
-        logger.info(f"Added {len(additional_rows)} new rows")
+        if next_row > 1 and additional_rows:  # Make sure we have data and a valid row
+            update_range = f'A{next_row}:D{next_row + len(additional_rows) - 1}'
+            worksheet.update(range_name=update_range, values=additional_rows)
+            logger.info(f"Added {len(additional_rows)} new rows")
     except Exception as e:
         logger.error(f"Error adding new rows: {e}")
 
@@ -233,41 +254,35 @@ def clear_processed_rows(worksheet, rows_to_clear):
 
     try:
         for row_index in rows_to_clear:
-            worksheet.update(f'A{row_index}:E{row_index}', [['', '', '', '', '']])
+            worksheet.update(f'A{row_index}:D{row_index}', [['', '', '', '']])
         logger.info(f"Cleared {len(rows_to_clear)} processed rows")
     except Exception as e:
         logger.error(f"Error clearing rows: {e}")
 
 
-
-def process_picklist(credentials_file = "gspread/picklist.json", sheet_name="Warehouse Test", worksheet_name="Imported Data2"):
+def process_picklist(credentials_file="picklist.json", sheet_name="Warehouse Test", worksheet_name="Imported Data2"):
     """Main function to process the picklist."""
     try:
         # Connect to Google Sheet
         worksheet = connect_to_sheet(credentials_file, sheet_name, worksheet_name)
         logger.info(f"Connected to sheet: {sheet_name}, worksheet: {worksheet_name}")
 
-        # Fetch all required data at once
-        data = worksheet.col_values(1)  # Product name
-        variation_names = worksheet.col_values(2)  # Variation name
-        quantity_column = worksheet.col_values(4)  # Quantity
-        sku_column = worksheet.col_values(5)  # SKU
+        # Fetch all required data at once - adjusted for new column positions
+        order_ids = worksheet.col_values(1)  # Column A: order_sn
+        quantities = worksheet.col_values(2)  # Column B: Quantity
+        skus = worksheet.col_values(3)  # Column C: SKU Reference No.
+        parent_skus = worksheet.col_values(4)  # Column D: Parent SKU Reference No.
 
-        # Process raw data
-        processed_data = process_raw_data(data)
-        worksheet.update(processed_data)
-        logger.info("Raw data processed and updated")
+        logger.info(f"Fetched {len(order_ids)} rows of data")
+        logger.debug(f"Sample data - Orders: {order_ids[:3]}, Quantities: {quantities[:3]}, SKUs: {skus[:3]}")
 
-        # Updated code with validation
-        skus_list = extract_skus(sku_column)
-        if skus_list:  # Only update if the list isn't empty
-            update_range = f'E1:E{len(skus_list)}'
-            update_values = [[sku] for sku in skus_list]
-            worksheet.update(range_name=update_range, values=update_values)
+        if not order_ids or len(order_ids) <= 1:  # Check if we have data (excluding header)
+            logger.warning("No data found in the worksheet")
+            return False
 
         # Process individual sizes
         sku_updates, quantity_updates, size_rows_to_clear = process_individual_sizes(
-            variation_names, quantity_column
+            order_ids, quantities, skus
         )
 
         # Apply batch updates for individual sizes
@@ -275,12 +290,12 @@ def process_picklist(credentials_file = "gspread/picklist.json", sheet_name="War
 
         # Process bundle sizes
         bundle_additional_rows, bundle_rows_to_clear = process_bundle_sizes(
-            variation_names, quantity_column
+            order_ids, quantities, skus
         )
 
         # Process special bundles
         special_bundle_rows, special_bundle_clear = process_special_bundles(
-            variation_names, quantity_column, sku_column
+            order_ids, quantities, skus, parent_skus
         )
 
         # Combine all additional rows and rows to clear
