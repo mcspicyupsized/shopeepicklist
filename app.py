@@ -77,12 +77,13 @@ def get_credentials_file():
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         # Create a temporary file with the credentials
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
-            json.dump(st.secrets["gcp_service_account"], f)
+            # Convert AttrDict to a regular dict before dumping
+            secrets_dict = dict(st.secrets["gcp_service_account"])
+            json.dump(secrets_dict, f)
             return f.name
     else:
         # Use local file
         return "gspread/picklist.json"  # Update this path if needed
-
 
 # Sidebar for configuration
 st.sidebar.header("Settings")
