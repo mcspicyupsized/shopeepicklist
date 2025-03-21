@@ -4,7 +4,13 @@ import io
 import tempfile
 import os
 from datetime import datetime
-from shopeepicklist import process_picklist  # Make sure this matches your actual filename
+import gspread
+from gspread_dataframe import get_as_dataframe, set_as_dataframe
+import json
+
+# Import our modules
+from shopeepicklist import process_picklist
+from data_processor import process_shopee_export
 
 st.set_page_config(
     page_title="Shopee Picklist Processor",
@@ -44,6 +50,12 @@ st.markdown("""
         border-radius: 5px;
         margin-bottom: 20px;
     }
+    .step-box {
+        background-color: #f8f9fa;
+        border-left: 4px solid #4CAF50;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,10 +65,24 @@ st.markdown("""
     <div class="logo">📦</div>
     <div>
         <h1>Shopee Picklist Processor</h1>
-        <p class="subtitle">Convert bulk orders into warehouse pick items</p>
+        <p class="subtitle">Convert Shopee orders into warehouse pick items</p>
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+
+# Function to get credentials file
+def get_credentials_file():
+    """Get the path to the credentials file, either from Streamlit secrets or local file"""
+    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+        # Create a temporary file with the credentials
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            json.dump(st.secrets["gcp_service_account"], f)
+            return f.name
+    else:
+        # Use local file
+        return "gspread/picklist.json"  # Update this path if needed
+
 
 # Sidebar for configuration
 st.sidebar.header("Settings")
@@ -67,7 +93,7 @@ credentials_option = st.sidebar.radio(
     ["Upload JSON", "Use Saved Credentials"]
 )
 
-credentials_file = "picklist.json"  # Default saved credentials path
+credentials_file = get_credentials_file()
 
 if credentials_option == "Upload JSON":
     uploaded_credentials = st.sidebar.file_uploader(
@@ -84,10 +110,80 @@ if credentials_option == "Upload JSON":
 sheet_name = st.sidebar.text_input("Google Sheet Name", "Warehouse Test")
 worksheet_name = st.sidebar.text_input("Worksheet Name", "Imported Data2")
 
-# Main app functionality
-tab1, tab2, tab3 = st.tabs(["Process Orders", "Data Preview", "Help"])
+# Main app tabs
+tabs = st.tabs(["Data Import", "Process Orders", "Data Preview", "Help"])
 
-with tab1:
+# Data Import Tab
+with tabs[0]:
+    st.header("Import Shopee Order Data")
+
+    st.markdown("""
+    <div class="info-box">
+        <p>Upload your Shopee order export file to prepare it for processing. 
+        The app will convert it to the format needed for the picklist processor.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    uploaded_file = st.file_uploader("Upload Shopee order export (Excel)", type=["xlsx", "xls"])
+
+    if uploaded_file:
+        with st.spinner("Processing order data..."):
+            try:
+                # Save the uploaded file to a temporary location
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    temp_file_path = tmp.name
+
+                # Process the file
+                processed_df = process_shopee_export(temp_file_path)
+
+                if processed_df is not None:
+                    st.success(f"✅ Successfully processed {len(processed_df)} order items!")
+
+                    # Display the processed data
+                    st.subheader("Processed Order Data")
+                    st.dataframe(processed_df, use_container_width=True)
+
+                    # Option to save directly to Google Sheet
+                    if st.button("Upload to Google Sheet", type="primary"):
+                        with st.spinner("Uploading to Google Sheet..."):
+                            try:
+                                # Connect to the Google Sheet
+                                sa = gspread.service_account(filename=credentials_file)
+                                sh = sa.open(sheet_name)
+                                wks = sh.worksheet(worksheet_name)
+
+                                # Clear the current data
+                                wks.clear()
+
+                                # Upload the processed data
+                                set_as_dataframe(wks, processed_df)
+
+                                st.success("✅ Data uploaded to Google Sheet successfully!")
+                            except Exception as e:
+                                st.error(f"❌ Error uploading to Google Sheet: {str(e)}")
+
+                    # Option to download as CSV
+                    csv = processed_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Processed Data as CSV",
+                        data=csv,
+                        file_name="processed_orders.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.error("❌ Could not process the file. Please check that it has the required columns.")
+
+                # Clean up the temporary file
+                os.unlink(temp_file_path)
+
+            except Exception as e:
+                st.error(f"❌ Error processing file: {str(e)}")
+
+# Process Orders Tab
+with tabs[1]:
+    st.header("Process Orders")
+
     st.markdown("""
     <div class="info-box">
         <h3>Process Picklist</h3>
@@ -147,16 +243,13 @@ with tab1:
     else:
         st.info("No processing history yet")
 
-with tab2:
-    st.subheader("Preview Google Sheet Data")
+# Data Preview Tab
+with tabs[2]:
+    st.header("Preview Google Sheet Data")
 
     if st.button("Load Preview Data"):
         try:
             with st.spinner("Loading data preview..."):
-                # Import here to avoid requiring gspread when not used
-                import gspread
-                from gspread_dataframe import get_as_dataframe
-
                 # Connect to the Google Sheet
                 sa = gspread.service_account(filename=credentials_file)
                 sh = sa.open(sheet_name)
@@ -171,23 +264,32 @@ with tab2:
         except Exception as e:
             st.error(f"Error loading preview: {str(e)}")
 
-with tab3:
-    st.subheader("Help & Instructions")
+# Help Tab
+with tabs[3]:
+    st.header("Help & Instructions")
 
     st.markdown("""
-    ### How to Use This App
+    ### Complete Workflow
 
-    1. **Set Up Google Sheets Credentials**
-       - Upload your service account JSON file or use saved credentials
-       - Make sure your service account has access to the Google Sheet
+    <div class="step-box">
+        <strong>Step 1:</strong> Export your orders from Shopee admin panel as an Excel file
+    </div>
 
-    2. **Configure Sheet Details**
-       - Enter the exact name of your Google Sheet
-       - Enter the worksheet name where your data is located
+    <div class="step-box">
+        <strong>Step 2:</strong> Upload the Excel file in the "Data Import" tab
+    </div>
 
-    3. **Process Your Picklist**
-       - Click the "Process Picklist" button on the Process Orders tab
-       - Wait for the processing to complete
+    <div class="step-box">
+        <strong>Step 3:</strong> Review the processed data and click "Upload to Google Sheet"
+    </div>
+
+    <div class="step-box">
+        <strong>Step 4:</strong> Go to the "Process Orders" tab and click "Process Picklist"
+    </div>
+
+    <div class="step-box">
+        <strong>Step 5:</strong> Check the "Data Preview" tab to see the final processed data
+    </div>
 
     ### Data Format Requirements
 
@@ -207,7 +309,7 @@ with tab3:
     ### Need Help?
 
     If you encounter any issues or need assistance, please contact the support team.
-    """)
+    """, unsafe_allow_html=True)
 
 # Footer
 st.markdown("---")
@@ -226,4 +328,3 @@ def cleanup():
 import atexit
 
 atexit.register(cleanup)
-#
