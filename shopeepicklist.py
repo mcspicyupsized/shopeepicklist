@@ -258,12 +258,12 @@ def process_picklist(credentials_file = "gspread/picklist.json", sheet_name="War
         worksheet.update(processed_data)
         logger.info("Raw data processed and updated")
 
-        # Process and update SKUs
+        # Updated code with validation
         skus_list = extract_skus(sku_column)
-        update_range = f'E1:E{len(skus_list)}'
-        update_values = [[sku] for sku in skus_list]
-        worksheet.update(update_range, update_values)
-        logger.info("SKUs extracted and updated")
+        if skus_list:  # Only update if the list isn't empty
+            update_range = f'E1:E{len(skus_list)}'
+            update_values = [[sku] for sku in skus_list]
+            worksheet.update(range_name=update_range, values=update_values)
 
         # Process individual sizes
         sku_updates, quantity_updates, size_rows_to_clear = process_individual_sizes(
