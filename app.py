@@ -5,7 +5,7 @@ import tempfile
 import os
 from datetime import datetime
 import gspread
-from gspread_dataframe import get_as_dataframe, set_as_dataframe
+from gspread_dataframe import get_as_dataframe
 import json
 
 # Import our modules
@@ -157,7 +157,7 @@ with tabs[0]:
                                 wks.clear()
 
                                 # Upload the processed data
-                                set_as_dataframe(wks, processed_df)
+                                wks.update([processed_df.columns.values.tolist()] + processed_df.values.tolist())
 
                                 st.success("✅ Data uploaded to Google Sheet successfully!")
                             except Exception as e:
